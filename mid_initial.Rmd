@@ -1,0 +1,310 @@
+---
+title: "508 Midterm"
+author: "Caesar"
+date: "2023-09-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidycensus)
+library(tidyverse)
+library(sf)
+library(spdep)
+library(caret)
+library(ckanr)
+library(FNN)
+library(grid)
+library(gridExtra)
+library(ggcorrplot) # plot correlation plot
+library(corrr)      # another way to plot correlation plot
+library(kableExtra)
+library(jtools)     # for regression model plots
+library(ggstance) # to support jtools plots
+library(ggpubr)    # plotting R^2 value on ggplot point scatter
+library(broom.mixed) # needed for effects plots
+```
+
+```{r}
+data <- st_read("https://raw.githubusercontent.com/mafichman/musa_5080_2023/main/Midterm/data/2023/studentData.geojson")
+```
+
+```{r}
+variables <- c('objectid',
+               'census_tract',
+               'central_air',
+               'depth',
+               'exempt_land',
+               'exterior_condition',
+               'fireplaces',
+               'frontage',
+               'fuel',
+               'garage_spaces',
+               'garage_type',
+               'general_construction',
+               'interior_condition',
+               'number_of_bathrooms',
+               'number_of_bedrooms',
+               'number_of_rooms',
+               'number_stories',
+               'off_street_open',
+               'parcel_shape',
+               'quality_grade',
+               'sale_price')
+```
+
+```{r}
+f_df <- data[, variables]
+```
+
+```{r}
+ex_his <- ggplot(f_df, aes(x = exterior_condition)) +
+  geom_histogram(binwidth = 1, fill = "grey", color = "black") +
+  labs(title = "exterior", x = "Level", y = "Frequency")
+
+in_his <- ggplot(f_df, aes(x = interior_condition)) +
+  geom_histogram(binwidth = 1, fill = "grey", color = "black") +
+  labs(title = "interior", x = "Level", y = "Frequency")
+
+qua_his <- ggplot(f_df, aes(x = quality_grade)) +
+  geom_histogram(stat='count',fill = "grey", color = "black") +
+  labs(title = "quality", x = "Level", y = "Frequency")
+
+par_his <- ggplot(f_df, aes(x = parcel_shape)) +
+  geom_histogram(stat='count',fill = "grey", color = "black") +
+  labs(title = "parcel", x = "Level", y = "Frequency")
+
+nos_his <- ggplot(f_df, aes(x = number_stories)) +
+  geom_histogram(stat='count',fill = "grey", color = "black") +
+  labs(title = "num_story", x = "Level", y = "Frequency")
+
+nobed_his <- ggplot(f_df, aes(x = number_of_bedrooms)) +
+  geom_histogram(stat='count',fill = "grey", color = "black") +
+  labs(title = "num_bed", x = "Level", y = "Frequency")
+
+nobath_his <- ggplot(f_df, aes(x = number_of_bathrooms)) +
+  geom_histogram(stat='count',fill = "grey", color = "black") +
+  labs(title = "num_bath", x = "Level", y = "Frequency")
+
+gencon_his <- ggplot(f_df, aes(x = general_construction)) +
+  geom_histogram(stat='count',fill = "grey", color = "black") +
+  labs(title = "num_construction", x = "Level", y = "Frequency")
+
+grid.arrange(ex_his, in_his, qua_his, par_his, nos_his,nobed_his, nobath_his,gencon_his, ncol = 4)
+```
+
+```{r}
+sale_box <- ggplot(f_df, aes(y = sale_price)) +
+  geom_boxplot() +
+  labs(title = "Boxplot of sale price",
+       x = "sale price",
+       y = "Value")
+
+ostrt_box <- ggplot(f_df, aes(y = off_street_open)) +
+  geom_boxplot() +
+  labs(title = "Boxplot of off_street_open",
+       x = "offstreet_space",
+       y = "Value")
+
+dep_box <- ggplot(f_df, aes(y = depth)) +
+  geom_boxplot() +
+  labs(title = "Boxplot of depth",
+       x = "depth",
+       y = "Value")
+
+fr_box <- ggplot(f_df, aes(y = frontage)) +
+  geom_boxplot() +
+  labs(title = "Boxplot of frontage",
+       x = "frontage",
+       y = "Value")
+
+grid.arrange(sale_box, ostrt_box, dep_box, fr_box, ncol = 4)
+```
+
+```{r outlier process}
+df_pro <- f_df
+df_pro$frontage <- pmin(df_pro$frontage, 500)
+df_pro$depth <- pmin(df_pro$depth, 600)
+df_pro$sale_price <- pmin(df_pro$sale_price,4000000)
+df_pro$off_street_open <- pmin(df_pro$off_street_open,10000)
+df_pro$number_of_bedrooms <- pmin(df_pro$number_of_bedrooms,10)
+df_pro$number_of_bathrooms <- pmin(df_pro$number_of_bathrooms,5)
+```
+
+```{r drop column with large missing data}
+df_pro <- subset(df_pro,select = -c(number_of_rooms,quality_grade,general_construction,exempt_land,fireplaces))
+```
+
+```{r deal with missing data}
+df_pro$central_air[is.na(df_pro$central_air)] <- 'N'
+df_pro$depth[is.na(df_pro$depth)] <- 0
+df_pro <- df_pro %>%
+  filter(!is.na(exterior_condition))%>%
+  filter(!is.na(exterior_condition))%>%
+  filter(!is.na(interior_condition))%>%
+  filter(!is.na(number_of_bedrooms))%>%
+  filter(!is.na(number_stories))%>%
+  filter(!is.na(number_of_bathrooms))%>%
+  filter(!is.na(off_street_open))%>%
+  filter(!is.na(garage_spaces))
+```
+
+```{r}
+acs_variable_list.2021 <- load_variables(2021, #year
+                                         "acs1", #five year ACS estimates
+                                         cache = TRUE)
+acs_variable_list.2020 <- load_variables(2020, #year
+                                         "acs5", #five year ACS estimates
+                                         cache = TRUE)
+```
+
+```{r results='hide'}
+tracts21 <-  
+  get_acs(geography = "tract",
+          variables = c("B01001_001E", # ACS total Pop estimate
+              'B02001_002E', # Estimate!!Total:!!White alone
+              'B02001_003E', # Estimate!!Total:!!Black or African American alone
+              'B02001_005E', # Estimate!!Total:!!Asian alone
+              'B19013A_001E',# Median household income White alone
+              'B19013B_001E',# Median household income Black alone
+              'B19013D_001E',# Median household income Asian alone
+              'B19013_001E', # Median household income 
+              'B01002_001E', # Median Age by Sex 
+              "B25002_001E", # Estimate of total housing units
+              "B25002_003E", # Number of vacant housing units
+              "B06009_006E", # Total graduate or professional degree
+              "B15001_050E",
+              "B15001_009E",
+              "B25058_001E",
+              "B06012_002E",
+              'B25105_001E', # Median monthly housing costs 
+              'B25037_001E', # Median year structure built --!!Total
+              'B10058_002E', # Total:!!In labor force
+              'B10058_007E', # Not in labor force
+              'B08141_017E', # Public transportation:!!No vehicle available
+              'B08141_018E', # Public transportation:!!1 vehicle available 
+              'B09002_002E', # OWN CHILDREN UNDER 18 YEARS married family
+              'B09002_015E', # Female householder
+              'B14001_004E'), # Enrolled in kindergarten 
+          year=2021, state=42,
+          county=101, geometry=TRUE, output = "wide") %>% 
+  st_transform('ESRI:102728') %>%
+
+  rename(TotalPop = B01001_001E, 
+         White = B02001_002E,
+         Black = B02001_003E,
+         Asian = B02001_005E,
+         MedHHInc_White = B19013A_001E,
+         MedHHInc_Black = B19013B_001E,
+         MedHHInc_Asian = B19013D_001E,
+         MedHHInc = B19013_001E,
+         Median_Age_bysex = B01002_001E,
+         Total_Housing_Units = B25002_001E,
+         Vacant_Housing_Units = B25002_003E,
+         Total_Graduate_Prof_Degree = B06009_006E,
+         FemaleBachelors = B15001_050E, 
+         MaleBachelors = B15001_009E,
+         MedRent = B25058_001E,
+         TotalPoverty = B06012_002E,
+         Med_mon_hscst = B25105_001E,
+         Med_built_year = B25037_001E,
+         Lab_force = B10058_002E,
+         no_lav_force = B10058_007E,
+         no_pub_trans = B08141_017E,
+         one_pub_trans = B08141_018E,
+         own_child = B09002_002E,
+         own_child_fe = B09002_015E,
+         enroll_kinder = B14001_004E)
+```
+
+```{r}
+df_pro <- df_pro %>%
+  st_transform('ESRI:102286')
+tracts21 <- tracts21 %>%
+  st_transform('ESRI:102286')
+```
+
+```{r drop M column}
+tracts21 <- tracts21[, !grepl("M$", names(tracts21))]
+```
+
+```{r tracts data clean}
+mean_in_w <- mean(tracts21$MedHHInc_White,na.rm = TRUE)
+tracts21$MedHHInc_White[is.na(tracts21$MedHHInc_White)] <- mean_in_w
+
+mean_in_b <- mean(tracts21$MedHHInc_Black,na.rm = TRUE)
+tracts21$MedHHInc_Black[is.na(tracts21$MedHHInc_Black)] <- mean_in_b
+
+mean_in_a <- mean(tracts21$MedHHInc_Asian,na.rm = TRUE)
+tracts21$MedHHInc_Asian[is.na(tracts21$MedHHInc_Asian)] <- mean_in_a
+
+mean_in <- mean(tracts21$MedHHInc,na.rm = TRUE)
+tracts21$MedHHInc[is.na(tracts21$MedHHInc)] <- mean_in
+
+med_age <- mean(tracts21$Median_Age_bysex,na.rm = TRUE)
+tracts21$Median_Age_bysex[is.na(tracts21$Median_Age_bysex)] <- med_age
+
+med_rent <- mean(tracts21$MedRent,na.rm = TRUE)
+tracts21$MedRent[is.na(tracts21$MedRent)] <- med_rent
+
+mean_medmonhh <- mean(tracts21$Med_mon_hscst,na.rm = TRUE)
+tracts21$Med_mon_hscst[is.na(tracts21$Med_mon_hscst)] <- mean_medmonhh
+
+med_b_yr <- median(tracts21$Med_built_year,na.rm = TRUE)
+tracts21$Med_built_year[is.na(tracts21$Med_built_year)] <- med_b_yr
+```
+
+```{r}
+hh_tract <- st_join(df_pro,tracts21, join = st_within)
+```
+
+# The strucuture of housing price modeling
+## data prepare 
+housing price, census, school, park, crime (the dataset which may have related to the housing price)
+
+## data wrangling 
+clean the housing price data (check the variable and keep useful one)
+make the geo data (school park crime) into useful variable can be used in prediction
+  make pre visualization about the variable created (check regularity)
+combine the data into variable of price predict dataset
+
+## principle component analysis 
+check the distribution of data to fix the outlier
+make correlation test to compare set of variables (like num of knn)
+check collinear of variables
+
+## data modeling
+use selected varialbes to build inital model 
+add spatial lag
+shit!
+
+```{r}
+crime_path <- 'https://phl.carto.com/api/v2/sql?filename=incidents_part1_part2&format=csv&q=SELECT%20*%20,%20ST_Y(the_geom)%20AS%20lat,%20ST_X(the_geom)%20AS%20lng%20FROM%20incidents_part1_part2%20WHERE%20dispatch_date_time%20%3E=%20%272021-01-01%27%20AND%20dispatch_date_time%20%3C%20%272022-01-01%27'
+
+crime <- read.csv(crime_path)
+```
+
+```{r}
+crime <- crime%>%
+  filter(lat > 0)
+crime_df <- st_as_sf(crime, coords = c("lng", "lat"), crs = 4326)
+```
+
+```{r}
+# Parks & Recreation Program Sites
+park <- 'https://opendata.arcgis.com/api/v3/datasets/9eb26a787a6e448ba426eea7f9f0d93a_0/downloads/data?format=geojson&spatialRefId=4326'
+park <- st_read(park)
+```
+
+```{r}
+park2 <- 'https://opendata.arcgis.com/api/v3/datasets/38f251496c10432ca0560e7989fcc316_0/downloads/data?format=geojson&spatialRefId=4326&where=1%3D1'
+park2 <- st_read(park2)
+```
+
+```{r}
+school <- 'https://opendata.arcgis.com/datasets/d46a7e59e2c246c891fbee778759717e_0.geojson'
+school <- st_read(school)
+```
