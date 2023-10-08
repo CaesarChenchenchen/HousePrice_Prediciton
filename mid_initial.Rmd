@@ -1,6 +1,6 @@
 ---
 title: "508 Midterm"
-author: "Caesar"
+author: "Caesar & Ling"
 date: "2023-09-27"
 output: html_document
 ---
